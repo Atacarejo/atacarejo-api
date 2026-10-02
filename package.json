@@ -5,15 +5,27 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "db:pull": "drizzle-kit pull",
+    "test": "vitest run"
   },
   "dependencies": {
-    "next": "16.3.8"
+    "@neondatabase/serverless": "^1.1.0",
+    "axios": "^1.20.0",
+    "drizzle-orm": "^0.45.3",
+    "next": "16.3.8",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
     "@types/node": "^20",
     "@types/react": "^19",
-    "typescript": "^5"
+    "dotenv": "^18.0.5",
+    "drizzle-kit": "^0.31.11",
+    "typescript": "^5",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
   },
   "packageManager": "yarn@1.22.22"
 }
