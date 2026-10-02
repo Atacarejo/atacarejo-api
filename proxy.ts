@@ -4,6 +4,11 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 
+// URL da API aberta direto na barra de endereço vai para o site (como no app antigo)
+const SITE_URL = "https://nextcubeinc.com";
+// navegação legítima: instalação/OAuth da Nuvemshop
+const NAVIGATION_PREFIXES = ["/api/auth"];
+
 // rotas chamadas pelo front do admin (atacarejo-front-web)
 const ADMIN_PREFIXES = ["/api/products", "/api/wholesale", "/api/config", "/api/setup"];
 
@@ -25,6 +30,14 @@ function corsHeaders(origin: string): Record<string, string> {
 
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  // só o navegador manda sec-fetch-mode: fetch do admin/loja é "cors"; webhooks e callbacks não mandam
+  if (
+    req.headers.get("sec-fetch-mode") === "navigate" &&
+    !NAVIGATION_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`))
+  ) {
+    return NextResponse.redirect(SITE_URL);
+  }
+
   const origin = req.headers.get("origin");
   const isAdmin = ADMIN_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
   const cors = isAdmin && origin && allowedOrigins().includes(origin) ? corsHeaders(origin) : null;

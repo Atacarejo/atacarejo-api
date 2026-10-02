@@ -6,9 +6,10 @@ import { config, proxy } from "@/proxy";
 
 const FRONT = "https://admin.atacarejo.test";
 
-function request(path: string, opts: { method?: string; origin?: string } = {}) {
+function request(path: string, opts: { method?: string; origin?: string; fetchMode?: string } = {}) {
   const headers: Record<string, string> = {};
   if (opts.origin) headers.origin = opts.origin;
+  if (opts.fetchMode) headers["sec-fetch-mode"] = opts.fetchMode;
   return new NextRequest(`https://api.test${path}`, { method: opts.method ?? "GET", headers });
 }
 
@@ -152,5 +153,30 @@ describe("proxy — matcher", () => {
     ["/favicon.ico", false],
   ])("%s → roda o proxy? %s", (url, expected) => {
     expect(unstable_doesMiddlewareMatch({ config, nextConfig: {}, url })).toBe(expected);
+  });
+});
+
+describe("proxy — URL da API aberta direto no navegador", () => {
+  it.each(["/api/products", "/api/public/123/wholesale", "/api/webhooks/store-redact", "/api/authx"])(
+    "navegação para %s → redireciona para o site",
+    (path) => {
+      const res = proxy(request(path, { fetchMode: "navigate" }));
+      expect(res.status).toBe(307);
+      expect(res.headers.get("location")).toBe("https://nextcubeinc.com/");
+    },
+  );
+
+  it.each(["/api/auth/callback", "/api/auth"])("instalação/OAuth (%s) continua passando", (path) => {
+    const res = proxy(request(path, { fetchMode: "navigate" }));
+    expect(res.headers.get("location")).toBeNull();
+  });
+
+  it.each([
+    ["fetch do admin/loja", "cors"],
+    ["fetch same-origin", "same-origin"],
+    ["webhook/callback (sem header)", undefined],
+  ])("%s não redireciona", (_l, fetchMode) => {
+    const res = proxy(request("/api/public/123/wholesale", { fetchMode }));
+    expect(res.headers.get("location")).toBeNull();
   });
 });
