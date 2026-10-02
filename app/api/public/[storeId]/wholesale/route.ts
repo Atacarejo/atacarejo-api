@@ -3,13 +3,13 @@
 import { eq } from "drizzle-orm";
 import { wholesalePrices } from "@/db/schema";
 import { db } from "@/lib/db";
-import { internalError, parseId } from "@/lib/http";
+import { errorBody, internalError, parseId } from "@/lib/http";
 import { PUBLIC_HEADERS, preflight } from "../../public";
 
 export async function GET(_req: Request, ctx: { params: Promise<{ storeId: string }> }) {
   const storeId = parseId((await ctx.params).storeId);
   if (storeId === null) {
-    return Response.json({ message: "storeId inválido" }, { status: 400, headers: PUBLIC_HEADERS });
+    return Response.json(errorBody("storeId inválido", "invalid_store_id"), { status: 400, headers: PUBLIC_HEADERS });
   }
 
   try {

@@ -31,7 +31,7 @@ export const PUT = withErrors(async (req) => {
   const update = parseConfigUpdate(await readJson(req));
 
   const [store] = await db.select({ id: stores.storeId }).from(stores).where(eq(stores.storeId, storeId)).limit(1);
-  if (!store) throw new ApiError("loja não instalada", 401);
+  if (!store) throw new ApiError("loja não instalada", 401, "store_not_installed");
 
   const [row] = await db
     .insert(storeConfig)

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, internalError, parseId, readJson, withErrors } from "@/lib/http";
+import { ApiError, errorBody, internalError, parseId, readJson, withErrors } from "@/lib/http";
 
 describe("parseId", () => {
   it.each([
@@ -64,13 +64,29 @@ describe("withErrors", () => {
     expect(await res.json()).toEqual({ ok: 1 });
   });
 
-  it.each([400, 401, 404, 409, 502])("ApiError %d → mesmo status e { message }", async (status) => {
+  it.each([400, 401, 404, 409, 502])("ApiError %d → mesmo status e { message, code }", async (status) => {
     const res = await withErrors(async () => {
-      throw new ApiError("mensagem esperada", status);
+      throw new ApiError("mensagem esperada", status, "invalid_price");
     })(req, {});
     expect(res.status).toBe(status);
-    expect(await res.json()).toEqual({ message: "mensagem esperada" });
+    expect(await res.json()).toEqual({ message: "mensagem esperada", code: "invalid_price" });
     expect(res.headers.get("x-request-id")).toBeNull();
+  });
+
+  it("ApiError com params → { message, code, params }", async () => {
+    const res = await withErrors(async () => {
+      throw new ApiError("item 3: preço inválido", 400, "invalid_price", { index: 3 });
+    })(req, {});
+    expect(await res.json()).toEqual({ message: "item 3: preço inválido", code: "invalid_price", params: { index: 3 } });
+  });
+
+  it("ApiError guarda status, code e params", () => {
+    const err = new ApiError("x", 429, "rate_limited", { max: 1 });
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toBe("x");
+    expect(err.status).toBe(429);
+    expect(err.code).toBe("rate_limited");
+    expect(err.params).toEqual({ max: 1 });
   });
 
   it("erro genérico → 500 com requestId no body e no header, sem vazar detalhe", async () => {
@@ -82,7 +98,8 @@ describe("withErrors", () => {
     expect(text).not.toContain("abc123");
     expect(text).not.toContain("SELECT");
     const body = JSON.parse(text);
-    expect(Object.keys(body).sort()).toEqual(["message", "requestId"]);
+    expect(Object.keys(body).sort()).toEqual(["code", "message", "requestId"]);
+    expect(body.code).toBe("internal_error");
     expect(body.requestId).toMatch(/^[0-9a-f-]{36}$/);
     expect(res.headers.get("x-request-id")).toBe(body.requestId);
   });
@@ -124,6 +141,7 @@ describe("readJson", () => {
     const err = (await readJson(post(body)).catch((e: unknown) => e)) as ApiError;
     expect(err).toBeInstanceOf(ApiError);
     expect(err.status).toBe(400);
+    expect(err.code).toBe("invalid_json");
   });
 
   it("sem body → ApiError 400", async () => {
@@ -140,7 +158,7 @@ describe("readJson", () => {
   it("dentro do withErrors vira resposta 400", async () => {
     const res = await withErrors(async (r) => Response.json(await readJson(r)))(post("{"), {});
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ message: "JSON inválido" });
+    expect(await res.json()).toEqual({ message: "JSON inválido", code: "invalid_json" });
   });
 });
 
@@ -155,7 +173,7 @@ describe("internalError", () => {
     const text = await res.text();
     expect(text).not.toContain("segredo");
     const body = JSON.parse(text);
-    expect(body).toEqual({ message: "erro interno", requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+    expect(body).toEqual({ message: "erro interno", code: "internal_error", requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
     expect(res.headers.get("x-request-id")).toBe(body.requestId);
   });
 
@@ -176,5 +194,15 @@ describe("internalError", () => {
     const err = new Error("boom");
     const res = internalError(err);
     expect(console.error).toHaveBeenCalledWith(`[${res.headers.get("x-request-id")}]`, err);
+  });
+});
+
+describe("errorBody", () => {
+  it("sem params → só message e code", () => {
+    expect(errorBody("loja não instalada", "store_not_installed")).toEqual({ message: "loja não instalada", code: "store_not_installed" });
+  });
+
+  it("com params → inclui params", () => {
+    expect(errorBody("máximo", "too_many_items", { max: 1000 })).toEqual({ message: "máximo", code: "too_many_items", params: { max: 1000 } });
   });
 });

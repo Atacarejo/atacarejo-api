@@ -49,7 +49,7 @@ describe("readSignedWebhook", () => {
     expect("error" in r).toBe(true);
     if ("error" in r) {
       expect(r.error.status).toBe(401);
-      expect(await r.error.json()).toEqual({ message: "invalid signature" });
+      expect(await r.error.json()).toEqual({ message: "invalid signature", code: "invalid_signature" });
     }
   });
 
@@ -64,6 +64,7 @@ describe("readSignedWebhook", () => {
     const raw = "{nao é json";
     const r = await readSignedWebhook(webhook(raw));
     expect("error" in r && r.error.status).toBe(400);
+    expect("error" in r && (await r.error.json())).toEqual({ message: "JSON inválido", code: "invalid_json" });
   });
 
   it("body vazio assinado → 400", async () => {

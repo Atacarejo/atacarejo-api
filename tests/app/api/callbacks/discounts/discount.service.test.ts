@@ -5,9 +5,10 @@ import type { StoreConfig } from "@/lib/store-config";
 vi.mock("@/lib/db", () => ({ db: {} }));
 
 import {
+  displayText,
   handleDiscountCallback,
   parseCart,
-  SUPPORTED_CURRENCY,
+  parseCurrency,
   type DiscountCallbackPayload,
   type DiscountDeps,
 } from "@/app/api/callbacks/discounts/discount.service";
@@ -119,7 +120,7 @@ describe("handleDiscountCallback — comandos para a Nuvemshop", () => {
             specs: {
               promotion_id: "promo-1",
               currency: "BRL",
-              display_text: { "pt-br": "Atacado" },
+              display_text: { "pt-br": "Atacado", "es-ar": "Mayorista", "es-mx": "Mayorista", "en-us": "Wholesale" },
               discount_specs: { type: "fixed", amount: "12.30" },
             },
           },
@@ -155,27 +156,71 @@ describe("handleDiscountCallback — comandos para a Nuvemshop", () => {
     expect(d.getWholesalePrices).toHaveBeenCalledWith(123, [10]);
   });
 
-  it.each([undefined, null, "", "BRL", 986])("currency %j → create_or_update_discount sempre em BRL", async (currency) => {
-    const r = await handleDiscountCallback(payload({ currency }), deps());
+  it("carrinho em BRL → create_or_update_discount em BRL (comportamento de sempre)", async () => {
+    const r = await handleDiscountCallback(payload({ currency: "BRL" }), deps());
     expect(r.status).toBe(200);
-    expect((r.body as { commands: { specs: { currency: string } }[] }).commands[0].specs.currency).toBe(SUPPORTED_CURRENCY);
+    expect((r.body as { commands: { specs: { currency: string } }[] }).commands[0].specs.currency).toBe("BRL");
   });
 
-  it.each(["USD", "ARS", "brl", "BRL "])("currency %j (string não vazia ≠ BRL) → 204 sem consultar nada", async (currency) => {
-    const d = deps();
-    const r = await handleDiscountCallback(payload({ currency }), d);
-    expect(r).toEqual({ status: 204, body: null });
-    expect(d.getConfig).not.toHaveBeenCalled();
-    expect(d.getWholesalePrices).not.toHaveBeenCalled();
+  it.each(["ARS", "MXN", "USD", "COP"])("carrinho em %s → desconto na moeda do carrinho, mesmo cálculo em centavos", async (currency) => {
+    // (10.00 − 8.00) × 3 = 6.00
+    const r = await handleDiscountCallback(payload({ currency }), deps());
+    expect(r).toEqual({
+      status: 200,
+      body: {
+        commands: [
+          {
+            command: "create_or_update_discount",
+            specs: {
+              promotion_id: "promo-1",
+              currency,
+              display_text: { "pt-br": "Atacado", "es-ar": "Mayorista", "es-mx": "Mayorista", "en-us": "Wholesale" },
+              discount_specs: { type: "fixed", amount: "6.00" },
+            },
+          },
+        ],
+      },
+    });
   });
 
-  it("SUPPORTED_CURRENCY é BRL", () => {
-    expect(SUPPORTED_CURRENCY).toBe("BRL");
+  it("moeda sem centavos (CLP): amount continua com 2 casas e ponto, como a doc pede", async () => {
+    // (15000 − 12000) × 3 = 9000
+    const r = await handleDiscountCallback(
+      payload({ currency: "CLP", products: [{ variant_id: 10, quantity: 3, price: "15000" }] }),
+      deps({ prices: [[10, 1_200_000]] }),
+    );
+    const specs = (r.body as { commands: { specs: { currency: string; discount_specs: { amount: string } } }[] }).commands[0].specs;
+    expect(specs.currency).toBe("CLP");
+    expect(specs.discount_specs.amount).toBe("9000.00");
   });
 
-  it("moeda estrangeira tem prioridade sobre loja não configurada (204, não 310)", async () => {
-    const r = await handleDiscountCallback(payload({ currency: "USD" }), deps({ config: null }));
+  it("ARS abaixo do mínimo → remove_discount (sem moeda no comando)", async () => {
+    const r = await handleDiscountCallback(
+      payload({ currency: "ARS", products: [{ variant_id: 10, quantity: 2, price: "10.00" }] }),
+      deps(),
+    );
+    expect(r.body).toEqual({ commands: [{ command: "remove_discount", specs: { scope: "cart", promotion_ids: ["promo-1"] } }] });
+  });
+
+  it.each([undefined, null, "", 986, "brl", "BRL ", " ARS", "BR", "BRLL", "R$", {}, ["BRL"]])(
+    "currency ausente/inválida %j → 204 sem consultar nada (não adivinha a moeda)",
+    async (currency) => {
+      const d = deps();
+      const r = await handleDiscountCallback(payload({ currency }), d);
+      expect(r).toEqual({ status: 204, body: null });
+      expect(d.getConfig).not.toHaveBeenCalled();
+      expect(d.getWholesalePrices).not.toHaveBeenCalled();
+    },
+  );
+
+  it("moeda inválida tem prioridade sobre loja não configurada (204, não 310)", async () => {
+    const r = await handleDiscountCallback(payload({ currency: undefined }), deps({ config: null }));
     expect(r.status).toBe(204);
+  });
+
+  it("moeda válida e loja não configurada → 310", async () => {
+    const r = await handleDiscountCallback(payload({ currency: "ARS" }), deps({ config: null }));
+    expect(r.status).toBe(310);
   });
 
   it("remove_discount também segue o formato specs da doc (sem scope/promotion_ids no topo)", async () => {
@@ -284,5 +329,53 @@ describe("parseCart — arredondamento de preço com 3+ casas (sem erro de float
     ["0.995", 100],
   ])("%s → %i centavos", (price, cents) => {
     expect(parseCart([{ variant_id: 10, quantity: 1, price }])[0].priceCents).toBe(cents);
+  });
+});
+
+describe("displayText — texto do desconto visível no carrinho/checkout", () => {
+  const BASE = { "pt-br": "Atacado", "es-ar": "Mayorista", "es-mx": "Mayorista", "en-us": "Wholesale" };
+
+  it.each([undefined, null, "", 42, {}, "fr", "fr-FR", "x", "español", "es--ar", "es-arg"])(
+    "language %j (ausente/não suportado/malformado) → só as traduções padrão",
+    (language) => {
+      expect(displayText(language)).toEqual(BASE);
+    },
+  );
+
+  it.each([
+    ["es", { es: "Mayorista" }],
+    ["ES", { es: "Mayorista" }],
+    ["pt", { pt: "Atacado" }],
+    ["en", { en: "Wholesale" }],
+    ["es_CO", { "es-co": "Mayorista" }],
+    ["es-CL", { "es-cl": "Mayorista" }],
+    ["en-GB", { "en-gb": "Wholesale" }],
+  ])("language %j → acrescenta a chave do idioma do carrinho", (language, extra) => {
+    expect(displayText(language)).toEqual({ ...BASE, ...extra });
+  });
+
+  it("chave já existente não é sobrescrita (pt_BR → pt-br continua Atacado)", () => {
+    expect(displayText("pt_BR")).toEqual(BASE);
+  });
+
+  it("não compartilha o objeto entre chamadas", () => {
+    displayText("es").extra = "x";
+    expect(displayText(undefined)).toEqual(BASE);
+  });
+
+  it("callback usa o language do payload no display_text", async () => {
+    const r = await handleDiscountCallback(payload({ language: "es" }), deps());
+    const specs = (r.body as { commands: { specs: { display_text: Record<string, string> } }[] }).commands[0].specs;
+    expect(specs.display_text.es).toBe("Mayorista");
+    expect(specs.display_text["pt-br"]).toBe("Atacado");
+  });
+});
+
+describe("parseCurrency", () => {
+  it.each(["BRL", "ARS", "CLP", "MXN", "USD"])("%s → ele mesmo", (c) => {
+    expect(parseCurrency(c)).toBe(c);
+  });
+  it.each([undefined, null, "", "brl", "Brl", "BR", "BRLX", " BRL", "BRL\n", "R$", 986, {}])("%j → null", (c) => {
+    expect(parseCurrency(c)).toBeNull();
   });
 });

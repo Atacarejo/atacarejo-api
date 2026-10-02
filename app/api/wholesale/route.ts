@@ -11,7 +11,7 @@ export const GET = withErrors(async (req) => {
   let variantIds: number[] | null = null;
   if (raw !== null) {
     const parts = raw.split(",").filter(Boolean);
-    if (parts.length > MAX_ITEMS) throw new ApiError(`máximo de ${MAX_ITEMS} variantes`, 400);
+    if (parts.length > MAX_ITEMS) throw new ApiError(`máximo de ${MAX_ITEMS} variantes`, 400, "too_many_variants", { max: MAX_ITEMS });
     variantIds = parts.map(parseId).filter((id): id is number => id !== null);
     if (variantIds.length === 0) return Response.json([]);
   }

@@ -8,7 +8,18 @@ import { decrypt } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/http";
 
-export const USER_AGENT = "Atacarejo (suporte@nextcubeinc.com)";
+const APP_NAME = "Atacarejo";
+const SUPPORT_EMAIL = "suporte@nextcubeinc.com";
+
+/**
+ * User-Agent exigido pela Nuvemshop em toda chamada: nome do app + app id + e-mail de contato.
+ * Ex.: "Atacarejo/1234 (suporte@nextcubeinc.com)". Sem CLIENT_ID (ou com valor estranho,
+ * que quebraria o header), fica só o nome. Lido a cada chamada para refletir o env atual.
+ */
+export function userAgent(): string {
+  const appId = (process.env.CLIENT_ID ?? "").trim();
+  return /^[\w.-]+$/.test(appId) ? `${APP_NAME}/${appId} (${SUPPORT_EMAIL})` : `${APP_NAME} (${SUPPORT_EMAIL})`;
+}
 
 /** Cria um client já apontando para /{storeId}/ — os paths são relativos ("products", "promotions"...). */
 export function nuvemshopClient(storeId: number, accessToken: string): AxiosInstance {
@@ -18,7 +29,7 @@ export function nuvemshopClient(storeId: number, accessToken: string): AxiosInst
     timeout: 10_000,
     headers: {
       Authorization: `Bearer ${accessToken}`,
-      "User-Agent": USER_AGENT,
+      "User-Agent": userAgent(),
       "Content-Type": "application/json",
     },
   });
@@ -54,6 +65,20 @@ export async function nuvemshopClientFor(storeId: number): Promise<AxiosInstance
     .where(eq(stores.storeId, storeId))
     .limit(1);
 
-  if (!store) throw new ApiError("loja não instalada", 401);
+  if (!store) throw new ApiError("loja não instalada", 401, "store_not_installed");
   return nuvemshopClient(storeId, decrypt(store.accessToken));
+}
+
+/**
+ * Converte a falha de uma chamada à Nuvemshop em ApiError para o admin:
+ * 429 → rate_limited, 401 → invalid_token, qualquer outra (5xx, rede, timeout) → 502.
+ * O 429 só chega aqui depois dos retries do client.
+ */
+export function nuvemshopApiError(err: unknown, fallbackMessage: string): ApiError {
+  const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+  if (status === 429) {
+    return new ApiError("muitas requisições à Nuvemshop, tente de novo em instantes", 429, "rate_limited");
+  }
+  if (status === 401) return new ApiError("token da loja inválido, reinstale o app", 401, "invalid_token");
+  return new ApiError(fallbackMessage, 502, "nuvemshop_unavailable");
 }

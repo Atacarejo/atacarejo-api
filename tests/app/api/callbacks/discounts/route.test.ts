@@ -82,7 +82,7 @@ describe("POST /api/callbacks/discounts", () => {
           specs: {
             promotion_id: "77",
             currency: "BRL",
-            display_text: { "pt-br": "Atacado" },
+            display_text: { "pt-br": "Atacado", "es-ar": "Mayorista", "es-mx": "Mayorista", "en-us": "Wholesale" },
             discount_specs: { type: "fixed", amount: "6.00" },
           },
         },

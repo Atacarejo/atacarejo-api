@@ -74,10 +74,10 @@ describe("POST /api/setup", () => {
   });
 
   it("loja sem token no banco (nuvemshopClientFor → ApiError 401) → 401 e setup não roda", async () => {
-    nuvemshopClientFor.mockRejectedValue(new ApiError("loja não instalada", 401));
+    nuvemshopClientFor.mockRejectedValue(new ApiError("loja não instalada", 401, "store_not_installed"));
     const res = await call(`Bearer ${token(123)}`);
     expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ message: "loja não instalada" });
+    expect(await res.json()).toEqual({ message: "loja não instalada", code: "store_not_installed" });
     expect(setup).not.toHaveBeenCalled();
   });
 

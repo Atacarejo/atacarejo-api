@@ -6,6 +6,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { wholesalePrices } from "@/db/schema";
 import { db } from "@/lib/db";
 import { parseId } from "@/lib/http";
+import { isLocale, WHOLESALE_LABEL } from "@/lib/locale";
 import { getStoreConfig, type StoreConfig } from "@/lib/store-config";
 import { computeWholesaleDiscountCents } from "@/lib/wholesale/discount";
 import type { CartItem } from "@/lib/wholesale/eligibility";
@@ -15,6 +16,8 @@ export type DiscountCallbackPayload = {
   store_id?: unknown;
   currency?: unknown;
   execution_tier?: unknown;
+  /** idioma do carrinho, ex.: "es" */
+  language?: unknown;
   products?: { variant_id?: unknown; product_id?: unknown; quantity?: unknown; price?: unknown }[];
 };
 
@@ -28,10 +31,33 @@ export type DiscountDeps = {
 };
 
 const NO_CHANGE: CallbackResult = { status: 204, body: null };
-// preços de atacado são cadastrados em BRL; a Nuvemshop não suporta multimoeda em descontos
-export const SUPPORTED_CURRENCY = "BRL";
+// Preços de atacado são cadastrados na moeda principal da loja (a Nuvemshop não suporta multimoeda
+// em descontos): o desconto vai na moeda do carrinho, que é a da loja.
 // 310: app não configurado para a loja → a Nuvemshop remove os descontos do app
 const NOT_CONFIGURED: CallbackResult = { status: 310, body: null };
+
+// texto do desconto no carrinho/checkout: a chave é o idioma, como "es-ar" na doc da Nuvemshop.
+// Manda as variantes das lojas atendidas para a Nuvemshop escolher a do idioma da loja.
+const DISPLAY_TEXT: Record<string, string> = {
+  "pt-br": WHOLESALE_LABEL.pt,
+  "es-ar": WHOLESALE_LABEL.es,
+  "es-mx": WHOLESALE_LABEL.es,
+  "en-us": WHOLESALE_LABEL.en,
+};
+
+/** DISPLAY_TEXT + a chave do idioma do carrinho ("es", "pt_BR" → "pt-br"), se for um idioma suportado. */
+export function displayText(language: unknown): Record<string, string> {
+  const text = { ...DISPLAY_TEXT };
+  const key = typeof language === "string" ? language.trim().toLowerCase().replace("_", "-") : "";
+  const prefix = key.split("-")[0];
+  if (/^[a-z]{2}(-[a-z]{2})?$/.test(key) && isLocale(prefix)) text[key] ??= WHOLESALE_LABEL[prefix];
+  return text;
+}
+
+/** Moeda do carrinho: código ISO 4217 ("BRL", "ARS", "CLP"...). Qualquer outra coisa → null. */
+export function parseCurrency(value: unknown): string | null {
+  return typeof value === "string" && /^[A-Z]{3}$/.test(value) ? value : null;
+}
 
 function parseQuantity(value: unknown): number {
   if (typeof value === "number") return value;
@@ -74,10 +100,9 @@ export async function handleDiscountCallback(
   // nossa promoção é cross_items; outros tiers não são com a gente
   if (payload.execution_tier != null && payload.execution_tier !== "cross_items") return NO_CHANGE;
 
-  // carrinho em outra moeda: não dá para comparar com o preço de atacado em BRL
-  if (typeof payload.currency === "string" && payload.currency && payload.currency !== SUPPORTED_CURRENCY) {
-    return NO_CHANGE;
-  }
+  // sem moeda válida não dá para montar o comando: não adivinha, deixa o carrinho como está
+  const currency = parseCurrency(payload.currency);
+  if (currency === null) return NO_CHANGE;
 
   const cart = parseCart(payload.products);
   const variantIds = [...new Set(cart.map((i) => i.variantId))];
@@ -112,8 +137,8 @@ export async function handleDiscountCallback(
           command: "create_or_update_discount",
           specs: {
             promotion_id: config.promotionId,
-            currency: SUPPORTED_CURRENCY,
-            display_text: { "pt-br": "Atacado" },
+            currency,
+            display_text: displayText(payload.language),
             discount_specs: { type: "fixed", amount: fromCents(discountCents) },
           },
         },

@@ -51,6 +51,6 @@ export function requireStoreId(req: Request): number {
   const auth = req.headers.get("authorization") ?? "";
   const match = /^Bearer\s+(.+)$/i.exec(auth);
   const storeId = match ? verifySessionToken(match[1].trim(), process.env.CLIENT_SECRET ?? "") : null;
-  if (storeId === null) throw new ApiError("não autorizado", 401);
+  if (storeId === null) throw new ApiError("não autorizado", 401, "unauthorized");
   return storeId;
 }

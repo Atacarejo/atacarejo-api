@@ -1,7 +1,6 @@
 // app/api/products/products.service.ts
 import axios from "axios";
-import { ApiError } from "@/lib/http";
-import { nuvemshopClientFor } from "@/lib/nuvemshop";
+import { nuvemshopApiError, nuvemshopClientFor } from "@/lib/nuvemshop";
 
 export const PER_PAGE = 50;
 
@@ -62,12 +61,6 @@ export async function listProducts(storeId: number, page: number, q: string) {
     if (axios.isAxiosError(err) && err.response?.status === 404) {
       return { products: [], total: 0, page, perPage: PER_PAGE };
     }
-    if (axios.isAxiosError(err) && err.response?.status === 429) {
-      throw new ApiError("muitas requisições à Nuvemshop, tente de novo em instantes", 429);
-    }
-    if (axios.isAxiosError(err) && err.response?.status === 401) {
-      throw new ApiError("token da loja inválido, reinstale o app", 401);
-    }
-    throw new ApiError("falha ao buscar produtos na Nuvemshop", 502);
+    throw nuvemshopApiError(err, "falha ao buscar produtos na Nuvemshop");
   }
 }

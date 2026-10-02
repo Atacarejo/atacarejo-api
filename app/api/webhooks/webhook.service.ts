@@ -4,7 +4,7 @@
 import { eq } from "drizzle-orm";
 import { stores } from "@/db/schema";
 import { db } from "@/lib/db";
-import { parseId } from "@/lib/http";
+import { errorBody, parseId } from "@/lib/http";
 import { verifyWebhookSignature } from "@/lib/webhook-hmac";
 
 const SIGNATURE_HEADER = "x-linkedstore-hmac-sha256";
@@ -16,7 +16,7 @@ const SIGNATURE_HEADER = "x-linkedstore-hmac-sha256";
 export async function readSignedWebhook(req: Request): Promise<{ body: Record<string, unknown> } | { error: Response }> {
   const raw = await req.text();
   if (!verifyWebhookSignature(raw, req.headers.get(SIGNATURE_HEADER), process.env.CLIENT_SECRET ?? "")) {
-    return { error: Response.json({ message: "invalid signature" }, { status: 401 }) };
+    return { error: Response.json(errorBody("invalid signature", "invalid_signature"), { status: 401 }) };
   }
   let body: unknown;
   try {
@@ -25,7 +25,7 @@ export async function readSignedWebhook(req: Request): Promise<{ body: Record<st
     body = null;
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) {
-    return { error: Response.json({ message: "JSON inválido" }, { status: 400 }) };
+    return { error: Response.json(errorBody("JSON inválido", "invalid_json"), { status: 400 }) };
   }
   return { body: body as Record<string, unknown> };
 }

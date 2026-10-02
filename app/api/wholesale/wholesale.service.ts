@@ -19,25 +19,25 @@ export type WholesaleChange =
  */
 export function parseWholesaleItems(body: unknown): WholesaleChange[] {
   const items = (body as { items?: unknown })?.items;
-  if (!Array.isArray(items)) throw new ApiError("items deve ser uma lista", 400);
-  if (items.length > MAX_ITEMS) throw new ApiError(`máximo de ${MAX_ITEMS} itens por vez`, 400);
+  if (!Array.isArray(items)) throw new ApiError("items deve ser uma lista", 400, "invalid_items");
+  if (items.length > MAX_ITEMS) throw new ApiError(`máximo de ${MAX_ITEMS} itens por vez`, 400, "too_many_items", { max: MAX_ITEMS });
 
   const seen = new Set<number>();
   return items.map((raw, i) => {
     const item = raw as { productId?: unknown; variantId?: unknown; price?: unknown };
     const productId = parseId(item?.productId);
     const variantId = parseId(item?.variantId);
-    if (productId === null || variantId === null) throw new ApiError(`item ${i}: productId/variantId inválido`, 400);
-    if (seen.has(variantId)) throw new ApiError(`item ${i}: variante repetida`, 400);
+    if (productId === null || variantId === null) throw new ApiError(`item ${i}: productId/variantId inválido`, 400, "invalid_item_id", { index: i });
+    if (seen.has(variantId)) throw new ApiError(`item ${i}: variante repetida`, 400, "duplicate_variant", { index: i });
     seen.add(variantId);
 
     // price ausente é erro (evita apagar dados por campo com nome errado); null ou "" remove
-    if (!("price" in Object(item))) throw new ApiError(`item ${i}: price é obrigatório (null para remover)`, 400);
+    if (!("price" in Object(item))) throw new ApiError(`item ${i}: price é obrigatório (null para remover)`, 400, "missing_price", { index: i });
     const empty = item.price === null || (typeof item.price === "string" && item.price.trim() === "");
     if (empty) return { type: "delete", variantId };
 
     const cents = toCents(item.price);
-    if (cents === null) throw new ApiError(`item ${i}: preço inválido`, 400);
+    if (cents === null) throw new ApiError(`item ${i}: preço inválido`, 400, "invalid_price", { index: i });
     if (cents === 0) return { type: "delete", variantId };
 
     return { type: "upsert", productId, variantId, price: fromCents(cents) };

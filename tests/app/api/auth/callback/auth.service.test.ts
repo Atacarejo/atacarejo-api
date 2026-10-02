@@ -23,14 +23,13 @@ vi.mock("@/lib/crypto", () => ({ encrypt, decrypt: vi.fn() }));
 
 const nuvemshopClient = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/nuvemshop", async (orig) => ({
-  USER_AGENT: (await orig<typeof import("@/lib/nuvemshop")>()).USER_AGENT,
+  userAgent: (await orig<typeof import("@/lib/nuvemshop")>()).userAgent,
   nuvemshopClient,
   nuvemshopClientFor: vi.fn(),
 }));
 
 import { GET } from "@/app/api/auth/callback/route";
-import { AuthService } from "@/app/api/auth/callback/auth.service";
-import { USER_AGENT } from "@/lib/nuvemshop";
+import { AuthService, PROMOTION_NAME } from "@/app/api/auth/callback/auth.service";
 
 const f = fake as FakeDb;
 const TOKEN = "tok_SUPER_SECRETO_123";
@@ -58,7 +57,7 @@ function fakeApi(over: Partial<FakeApi> = {}): FakeApi {
   return {
     get: vi.fn(async (path: string) => {
       if (path === "webhooks") return { data: [] };
-      if (path === "store") return { data: { original_domain: "loja.lojavirtualnuvem.com.br" } };
+      if (path === "store") return { data: { original_domain: "loja.lojavirtualnuvem.com.br", main_language: "pt", country: "BR" } };
       if (path.startsWith("promotions/")) return { data: { id: path.split("/")[1] } };
       throw new Error(`GET inesperado ${path}`);
     }),
@@ -121,8 +120,28 @@ describe("AuthService.install — troca de code por token", () => {
     expect(axiosPost).toHaveBeenCalledWith(
       "https://token.nuvemshop.test/apps/authorize/token",
       { client_id: "4242", client_secret: "segredo-de-teste", grant_type: "authorization_code", code: "abc" },
-      expect.objectContaining({ timeout: 10_000, headers: { "User-Agent": USER_AGENT } }),
+      expect.objectContaining({ timeout: 10_000, headers: { "User-Agent": "Atacarejo/4242 (suporte@nextcubeinc.com)" } }),
     );
+  });
+
+  it("sem CLIENT_ID a troca ainda manda User-Agent com nome do app e e-mail", async () => {
+    vi.stubEnv("CLIENT_ID", "");
+    axiosPost.mockRejectedValue(httpError(400));
+    await service.install("abc").catch(() => {});
+    expect(axiosPost.mock.calls[0][2].headers).toEqual({ "User-Agent": "Atacarejo (suporte@nextcubeinc.com)" });
+  });
+
+  it.each([
+    ["code vazio", "", "missing_code"],
+  ])("%s → code %s", async (_l, code, expected) => {
+    expect((await apiErrorOf(service.install(code))).code).toBe(expected);
+  });
+
+  it("falha na troca → code token_exchange_failed; resposta sem token → token_not_found", async () => {
+    axiosPost.mockRejectedValueOnce(httpError(400));
+    expect((await apiErrorOf(service.install("c"))).code).toBe("token_exchange_failed");
+    axiosPost.mockResolvedValueOnce({ data: { user_id: 1 } });
+    expect((await apiErrorOf(service.install("c"))).code).toBe("token_not_found");
   });
 
   it.each([
@@ -291,7 +310,7 @@ describe("AuthService.ensurePromotion", () => {
   it("promotionId vazio (\"\") é tratado como ausente: cria sem GET", async () => {
     getStoreConfig.mockResolvedValue({ ...SAVED, promotionId: "" });
     const api = fakeApi();
-    await service.ensurePromotion(123, asAxios(api));
+    await service.ensurePromotion(123, asAxios(api), "pt");
     expect(api.get).not.toHaveBeenCalled();
     expect(api.post).toHaveBeenCalledWith("promotions", expect.anything());
   });
@@ -354,21 +373,115 @@ describe("AuthService.ensureUninstallWebhook", () => {
   });
 });
 
-describe("AuthService.adminUrl", () => {
-  it("erro na API → null", async () => {
+describe("AuthService.storeSummary", () => {
+  it("erro na API → adminUrl e locale null", async () => {
     const api = fakeApi({ get: vi.fn(async () => Promise.reject(httpError(500))) });
-    expect(await service.adminUrl(asAxios(api))).toBeNull();
+    expect(await service.storeSummary(asAxios(api))).toEqual({ adminUrl: null, locale: null });
   });
 
-  it.each([[{}], [null], [{ original_domain: "" }]])("sem original_domain %j → null", async (data) => {
+  it.each([[null], ["texto"]])("resposta não-objeto %j → tudo null", async (data) => {
     const api = fakeApi({ get: vi.fn(async () => ({ data })) });
-    expect(await service.adminUrl(asAxios(api))).toBeNull();
+    expect(await service.storeSummary(asAxios(api))).toEqual({ adminUrl: null, locale: null });
   });
 
-  it("pede só o campo original_domain", async () => {
+  it.each([[{}], [{ original_domain: "" }], [{ original_domain: 42 }]])("sem original_domain %j → adminUrl null", async (data) => {
+    const api = fakeApi({ get: vi.fn(async () => ({ data })) });
+    expect((await service.storeSummary(asAxios(api))).adminUrl).toBeNull();
+  });
+
+  it("pede domínio e idioma/país num único GET /store", async () => {
     const api = fakeApi();
-    await service.adminUrl(asAxios(api));
-    expect(api.get).toHaveBeenCalledWith("store", { params: { fields: "original_domain" } });
+    await service.storeSummary(asAxios(api));
+    expect(api.get).toHaveBeenCalledTimes(1);
+    expect(api.get).toHaveBeenCalledWith("store", { params: { fields: "original_domain,main_language,languages,country" } });
+  });
+
+  it.each([
+    [{ main_language: "pt", country: "BR" }, "pt"],
+    [{ main_language: "es", country: "AR" }, "es"],
+    [{ main_language: "en", country: "US" }, "en"],
+    [{ country: "BR" }, "pt"],
+    [{ country: "MX" }, "es"],
+    [{ main_language: "fr", country: "AR" }, "es"],
+  ])("%j → locale %s", async (data, locale) => {
+    const api = fakeApi({ get: vi.fn(async () => ({ data: { original_domain: "x.test", ...data } })) });
+    expect(await service.storeSummary(asAxios(api))).toEqual({ adminUrl: "https://x.test/admin/apps/4242", locale });
+  });
+});
+
+describe("Nome da promoção por idioma da loja", () => {
+  beforeEach(() => {
+    axiosPost.mockResolvedValue({ data: { access_token: TOKEN, scope: "s", user_id: 123 } });
+  });
+
+  const storeApi = (store: unknown) =>
+    fakeApi({
+      get: vi.fn(async (path: string) => {
+        if (path === "store") return { data: store };
+        if (path === "webhooks") return { data: [] };
+        throw new Error(`GET inesperado ${path}`);
+      }),
+    });
+
+  it("PROMOTION_NAME: pt Atacado, es Mayorista, en Wholesale", () => {
+    expect(PROMOTION_NAME).toEqual({ pt: "Atacado", es: "Mayorista", en: "Wholesale" });
+  });
+
+  it.each([
+    ["loja BR (pt)", { original_domain: "a.test", main_language: "pt", country: "BR" }, "Atacado"],
+    ["loja AR (es)", { original_domain: "a.test", main_language: "es", country: "AR" }, "Mayorista"],
+    ["loja em inglês", { original_domain: "a.test", main_language: "en", country: "US" }, "Wholesale"],
+    ["loja MX sem main_language", { original_domain: "a.test", country: "MX" }, "Mayorista"],
+  ])("install em %s → promoção \"%s\"", async (_l, store, name) => {
+    const api = storeApi(store);
+    nuvemshopClient.mockReturnValue(asAxios(api));
+    await service.install("c");
+    expect(api.post).toHaveBeenCalledWith("promotions", { name, allocation_type: "cross_items", active: true });
+    // um único GET /store no install (domínio + idioma)
+    expect(api.get.mock.calls.filter(([p]) => p === "store")).toHaveLength(1);
+  });
+
+  it("install com GET /store falhando → nome padrão \"Atacado\" e adminUrl null", async () => {
+    const api = fakeApi({
+      get: vi.fn(async (path: string) => {
+        if (path === "store") throw httpError(500);
+        return { data: [] };
+      }),
+    });
+    nuvemshopClient.mockReturnValue(asAxios(api));
+    const r = await service.install("c");
+    expect(r.adminUrl).toBeNull();
+    expect(api.post).toHaveBeenCalledWith("promotions", expect.objectContaining({ name: "Atacado" }));
+    expect(api.get.mock.calls.filter(([p]) => p === "store")).toHaveLength(1);
+  });
+
+  it("setup sem locale (POST /api/setup) busca o idioma da loja só para criar a promoção", async () => {
+    const api = storeApi({ main_language: "es", country: "AR" });
+    await service.setup(123, asAxios(api));
+    expect(api.post).toHaveBeenCalledWith("promotions", expect.objectContaining({ name: "Mayorista" }));
+  });
+
+  it("setup com locale informado não consulta a loja", async () => {
+    const api = storeApi({ main_language: "pt" });
+    await service.setup(123, asAxios(api), "en");
+    expect(api.get).not.toHaveBeenCalledWith("store", expect.anything());
+    expect(api.post).toHaveBeenCalledWith("promotions", expect.objectContaining({ name: "Wholesale" }));
+  });
+
+  it("promoção existente é reaproveitada sem renomear e sem consultar a loja", async () => {
+    getStoreConfig.mockResolvedValue({ promotionId: "999", minQuantity: 3, atcStoreType: "all", designOption: 1 });
+    const api = fakeApi();
+    await service.ensurePromotion(123, asAxios(api));
+    expect(api.get).toHaveBeenCalledWith("promotions/999");
+    expect(api.get).not.toHaveBeenCalledWith("store", expect.anything());
+    expect(api.post).not.toHaveBeenCalled();
+    expect(api.put).not.toHaveBeenCalled();
+  });
+
+  it("ensurePromotion sem locale e GET /store falhando → \"Atacado\" (não falha o passo)", async () => {
+    const api = fakeApi({ get: vi.fn(async () => Promise.reject(httpError(503))) });
+    await service.ensurePromotion(123, asAxios(api));
+    expect(api.post).toHaveBeenCalledWith("promotions", expect.objectContaining({ name: "Atacado" }));
   });
 });
 
@@ -437,6 +550,20 @@ describe("GET /api/auth/callback", () => {
     expect(requestId).toMatch(/^[0-9a-f-]{36}$/);
     expect(text).toContain(requestId!);
     expect(text).not.toContain("SELECT");
+  });
+
+  it.each([
+    ["es-AR,es;q=0.9", "es", "incompleto", "No se pudo instalar la app"],
+    ["en-US,en;q=0.9", "en", "incomplete", "The app could not be installed"],
+    ["pt-BR", "pt-BR", "incompleto", "Não foi possível instalar o app"],
+    ["fr-FR,es;q=0.5", "es", "incompleto", "No se pudo instalar la app"],
+    ["fr-FR", "pt-BR", "incompleto", "Não foi possível instalar o app"],
+  ])("Accept-Language %s → página no idioma %s", async (acceptLanguage, lang, word, title) => {
+    const res = await GET(new Request(`${APP}/api/auth/callback`, { headers: { "accept-language": acceptLanguage } }));
+    const text = await expectHtml(res, 400);
+    expect(text).toContain(`<html lang="${lang}">`);
+    expect(text).toContain(title);
+    expect(text).toContain(word);
   });
 
   it("ApiError não leva x-request-id", async () => {

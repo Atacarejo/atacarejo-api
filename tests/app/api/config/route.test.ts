@@ -132,7 +132,7 @@ describe("PUT /api/config", () => {
     f.queue([]);
     const res = await put(JSON.stringify({ minQuantity: 5 }));
     expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ message: "loja não instalada" });
+    expect(await res.json()).toEqual({ message: "loja não instalada", code: "store_not_installed" });
     expect(f.chains).toHaveLength(1);
     expect(f.argsOf(0, "from")).toEqual([stores]);
   });

@@ -10,7 +10,7 @@ vi.mock("@/lib/db", () => ({ db }));
 const decrypt = vi.hoisted(() => vi.fn((s: string) => `plain:${s}`));
 vi.mock("@/lib/crypto", () => ({ decrypt, encrypt: vi.fn() }));
 
-import { nuvemshopClient, nuvemshopClientFor, USER_AGENT } from "@/lib/nuvemshop";
+import { nuvemshopApiError, nuvemshopClient, nuvemshopClientFor, userAgent } from "@/lib/nuvemshop";
 
 const f = fake as FakeDb;
 
@@ -44,6 +44,7 @@ beforeEach(() => {
   f.reset();
   decrypt.mockClear();
   vi.stubEnv("NUVEMSHOP_API_URL", "https://api.nuvemshop.test/v1//");
+  vi.stubEnv("CLIENT_ID", "4242");
 });
 
 describe("nuvemshopClient — configuração", () => {
@@ -59,14 +60,94 @@ describe("nuvemshopClient — configuração", () => {
     const headers = adapter.mock.calls[0][0].headers;
     expect(headers.get("Authorization")).toBe("Bearer tok_abc");
     expect(headers.has("Authentication")).toBe(false);
-    expect(headers.get("User-Agent")).toBe(USER_AGENT);
+    expect(headers.get("User-Agent")).toBe("Atacarejo/4242 (suporte@nextcubeinc.com)");
     expect(headers.get("Content-Type")).toMatch(/application\/json/);
     expect(adapter.mock.calls[0][0].url).toBe("store");
   });
 
-  it("USER_AGENT tem nome do app e contato", () => {
-    expect(USER_AGENT).toMatch(/Atacarejo/);
-    expect(USER_AGENT).toMatch(/@/);
+  it("retry em 429 reenvia o mesmo User-Agent", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c, adapter } = client([{ status: 429, headers: { "x-rate-limit-reset": "1" } }, { status: 200 }]);
+      const p = c.get("store");
+      await vi.advanceTimersByTimeAsync(1);
+      await p;
+      expect(adapter.mock.calls[1][0].headers.get("User-Agent")).toBe("Atacarejo/4242 (suporte@nextcubeinc.com)");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("userAgent", () => {
+  it("com CLIENT_ID → nome do app/app id + e-mail de contato", () => {
+    vi.stubEnv("CLIENT_ID", "4242");
+    expect(userAgent()).toBe("Atacarejo/4242 (suporte@nextcubeinc.com)");
+  });
+
+  it("CLIENT_ID com espaços nas pontas é aparado", () => {
+    vi.stubEnv("CLIENT_ID", " 4242 \n");
+    expect(userAgent()).toBe("Atacarejo/4242 (suporte@nextcubeinc.com)");
+  });
+
+  it.each([
+    ["ausente", undefined],
+    ["vazio", ""],
+    ["só espaços", "   "],
+  ])("CLIENT_ID %s → só nome do app + e-mail", (_l, value) => {
+    vi.stubEnv("CLIENT_ID", value as string);
+    expect(userAgent()).toBe("Atacarejo (suporte@nextcubeinc.com)");
+  });
+
+  it.each([["quebra de linha", "42\r\nX-Evil: 1"], ["espaço no meio", "42 43"], ["parênteses", "42)"]])(
+    "CLIENT_ID com %s (quebraria o header) → ignorado",
+    (_l, value) => {
+      vi.stubEnv("CLIENT_ID", value);
+      expect(userAgent()).toBe("Atacarejo (suporte@nextcubeinc.com)");
+    },
+  );
+
+  it("o client usa o CLIENT_ID do momento em que é criado", async () => {
+    vi.stubEnv("CLIENT_ID", "");
+    const { c, adapter } = client([{ status: 200 }]);
+    await c.get("store");
+    expect(adapter.mock.calls[0][0].headers.get("User-Agent")).toBe("Atacarejo (suporte@nextcubeinc.com)");
+  });
+});
+
+describe("nuvemshopApiError", () => {
+  const axiosErr = (status?: number) =>
+    new AxiosError(
+      "x",
+      "ERR",
+      undefined,
+      undefined,
+      status === undefined
+        ? undefined
+        : { status, statusText: "", headers: {}, config: { headers: new AxiosHeaders() }, data: {} },
+    );
+
+  it("429 → ApiError 429 rate_limited", () => {
+    const err = nuvemshopApiError(axiosErr(429), "falhou");
+    expect(err).toBeInstanceOf(ApiError);
+    expect([err.status, err.code]).toEqual([429, "rate_limited"]);
+  });
+
+  it("401 → ApiError 401 invalid_token", () => {
+    const err = nuvemshopApiError(axiosErr(401), "falhou");
+    expect([err.status, err.code]).toEqual([401, "invalid_token"]);
+  });
+
+  it.each([
+    ["500", axiosErr(500)],
+    ["403", axiosErr(403)],
+    ["404", axiosErr(404)],
+    ["rede (sem response)", axiosErr()],
+    ["erro não-axios", new Error("bug")],
+    ["valor não-Error", "x"],
+  ])("%s → ApiError 502 nuvemshop_unavailable com a mensagem informada", (_l, e) => {
+    const err = nuvemshopApiError(e, "falha ao buscar a loja");
+    expect([err.status, err.code, err.message]).toEqual([502, "nuvemshop_unavailable", "falha ao buscar a loja"]);
   });
 });
 
@@ -184,6 +265,7 @@ describe("nuvemshopClientFor", () => {
     const err = (await nuvemshopClientFor(123).catch((e: unknown) => e)) as ApiError;
     expect(err).toBeInstanceOf(ApiError);
     expect(err.status).toBe(401);
+    expect(err.code).toBe("store_not_installed");
     expect(decrypt).not.toHaveBeenCalled();
   });
 

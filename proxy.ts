@@ -10,7 +10,7 @@ const SITE_URL = "https://nextcubeinc.com";
 const NAVIGATION_PREFIXES = ["/api/auth"];
 
 // rotas chamadas pelo front do admin (atacarejo-front-web)
-const ADMIN_PREFIXES = ["/api/products", "/api/wholesale", "/api/config", "/api/setup"];
+const ADMIN_PREFIXES = ["/api/products", "/api/wholesale", "/api/config", "/api/setup", "/api/store"];
 
 function allowedOrigins(): string[] {
   return (process.env.FRONT_URL ?? "")
